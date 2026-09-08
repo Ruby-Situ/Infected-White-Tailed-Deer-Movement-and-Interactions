@@ -1,0 +1,766 @@
+---
+name: "Ruby (Huihua) Situ"
+title: "Interactions Between Collared and Not Collared White-Tailed Deer in Staten Island"
+output: html_document
+date: "2026-04-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#setwd("C:/Users/blubb/Desktop/deer")
+```
+
+Libraries
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(stringr)
+library(dplyr)
+
+```
+
+
+import files 
+```{r}
+deer <- read.csv("images_2009855.csv")
+cameras <- read.csv("deployments.csv")
+```
+
+
+
+
+Data cleaning and prep
+```{r}
+deerOnly <- filter(deer, common_name == "White-tailed Deer")
+
+#only take the useful columns to reduce the load on my computer
+deerReduced <- deerOnly %>% dplyr::select(deployment_id, image_id, filename, identified_by, common_name, timestamp, number_of_objects, individual_id, behavior, highlighted, markings)
+
+cameraReduced <- cameras %>% dplyr::select(deployment_id, subproject_name, latitude, longitude, placename, camera_name)
+
+#remove the BLK pictures
+noBLK <- deerReduced %>% filter(grepl("BLK", behavior) == FALSE)
+
+#merge datasets together based on the camera id
+deerCoord <- noBLK %>% left_join(cameraReduced, by = "deployment_id")
+
+#add interaction column and preset to 0
+deerCoord$interaction <- 0
+
+
+#remove NA's
+deerCoord <- na.omit(deerCoord)
+```
+
+Data fixing from older rmd file
+```{r}
+
+#creating a flag column to flag those with error for review
+deerCoord$Flag <- 0
+
+#extract the assumed correct id from the markings column and put it all in a list
+ids = c()
+for(x in 1:nrow(deerCoord)) {
+  #take out each id using regex 
+  curr <- str_extract_all(deerCoord$markings[x], "\\d+(?:-[A-Z]+)?")[[1]]
+  if(length(curr) == 0) {
+    ids[x] <- NA #no numbered id found
+  } else {
+    ids[x] <- paste(curr, collapse = ",") #paste together the ids with "," if more than one found, if only 1 this does not add a comma
+  }
+}
+
+#if an issue is found it will fix it then flag it with a 1 for review
+for(x in 1:nrow(deerCoord))
+{ 
+  #fixing the count number, it will based the count based on the annotation commas
+  if (deerCoord$number_of_objects[x] != (str_count(deerCoord$markings[x], ",")+ 1))
+  {
+    deerCoord$number_of_objects[x] <- (str_count(deerCoord$markings[x], ",")+ 1)
+    deerCoord$Flag[x] = 1
+  }
+  #if id column doesn't match it will update with the id from the markings column
+  if(!is.na(ids[x]) && !is.na(deerCoord$individual_id[x]) &&(ids[x] !=   deerCoord$individual_id[x])) #ignoring the NAs
+  {
+    deerCoord$individual_id[x] <- ids[x]
+    deerCoord$Flag[x] = 1
+  } 
+}
+
+```
+
+
+Removing bursts
+```{r}
+#only take one row if all the following column values are the same in multiple rows
+deerDistinct <- deerCoord %>% distinct(timestamp, markings, behavior, deployment_id, subproject_name, .keep_all = TRUE)
+View(deerDistinct)
+```
+
+
+
+Finding interactions of all combinations
+```{r}
+#finding direct interactions
+for(x in 1:nrow(deerDistinct))
+{
+  if(grepl(",", deerDistinct$markings[x])) #only proceed if there is more than 1 deer in a picture
+  {
+      #split up the markings column by ,
+      curr <- strsplit(deerDistinct$markings[x], ",")[[1]]
+      #the regex means only take the things between the first _ and the next _
+      middle <- str_match(curr,"^[^_]*_([^_]*)_.*$")[,2]
+      collar <- sub("_.*", "", curr) #take anything before the first _ from curr
+
+      #based on assumption that all collared deer are tagged
+      #finding the tagged and not tagged from the curr list
+      NT <- any(middle == "NT", na.rm = T) #if any item is NT this will return true
+      numTag <- sum(middle != "NT" & middle != ".", na.rm = T) #return # of tagged deer
+      numCol <- sum(collar == "C", na.rm = T)#return # of collared deer
+      numNoCol <- sum(collar == "NC", na.rm = T)#return # of uncollared deer
+      NCTag <- sum(collar == "NC" & (middle != "NT" & middle != "."), na.rm = TRUE)#of NC Tagged
+      NCNT <- sum(collar == "NC" & middle == "NT", na.rm = TRUE) #return # of NC NT deer
+      
+      
+      #if C+c that actually means 2+ collared deer 
+      if (numCol > 1 && NCTag > 0 && NCNT > 0)#C + C + (NC & T) + (NC & NT)
+      {
+        deerDistinct$interaction[x] = 6
+      }
+        else if(numCol > 1 && NCTag > 0) #C + C + (NC & T)
+      {
+        deerDistinct$interaction[x] = 1
+      } 
+      else if (numCol > 1 && NCNT > 0) #C + C + (NC & NT)
+      {
+        deerDistinct$interaction[x] = 2
+      }
+      else if (numCol > 1 && numNoCol == 0) #C + C
+      { 
+        deerDistinct$interaction[x] = 3
+      } 
+      else if (numCol == 1 && NCTag > 0)#C + (NC & T)
+      { 
+        deerDistinct$interaction[x] = 4
+      }
+      else if (numCol == 1 && NCNT > 0) #C + (NC & NT)
+      { 
+        deerDistinct$interaction[x] = 5
+      }
+  }
+}
+```
+
+
+Seperate the interactions / solo deer
+```{r}
+intOnly <- deerDistinct %>% filter(interaction > 0)
+NoIntDeer <- deerDistinct %>% filter(interaction == 0)
+
+```
+
+
+
+Using time intervals to find the exact number of interactions
+
+3 mins baseline I I I I na na na I I I 
+                _______ ________ _____
+                1 int     no int  2nt int
+                
+If no interaction for 3+ minutes after the series of photos interactions then everything before is counted as 1 interaction. 
+
+
+**3 minutes**
+**4 & 5 minutes** 4 and 5 gave the same result, but tiny increase of interactions from 3 mins
+**1 minutes** slight increase in interactions from 3 minutes
+
+**Test out other times by changing the 180 to a different number, all times in seconds**
+```{r}
+library(dplyr)
+
+#only keep the interactions and group them 
+deerOrganized <- intOnly %>% arrange(deployment_id, interaction, timestamp) %>% group_by(deployment_id, interaction)
+
+deerInterval <- deerOrganized %>% mutate(
+                prevTime = lag(timestamp), #lag = take previous
+                prevMark = lag(markings), #take the previous of time and markings 
+                
+                #calculate the time different between the current and previous photos for all
+                difTime = as.numeric(difftime(timestamp, prevTime, units = "secs")),
+                #if the time is na or the marking has changed or the time is over 3 minutes then it is true its a new interaction 
+                #the na is because lag assigns the first "lagged row" to NA since there is nothing before the first row 
+                newInt = ifelse(is.na(difTime) | markings != prevMark | difTime > 180, 1, 0), 
+                
+                #makes a running total instead of just an overall total like sum()
+                newEvent = cumsum(newInt)
+) %>% ungroup() #ungroup since it is getting grouped differently below
+
+View(deerInterval)
+
+#add a new column to calculate the amount of time that specific interaction happened for
+intTime3 <- deerInterval %>%
+  group_by(deployment_id, newEvent, markings) %>%
+  mutate(
+    startTime = min(timestamp), #get the start time which will always be the smallest in each group so using min()
+    endTime   = max(timestamp), 
+    #as.numeric gets rid of the "secs" at the end
+    interactTime = as.numeric(difftime(endTime, startTime, units = "secs"))
+  )
+
+
+#only keep one row from each group of interactions, 
+#at this point time the original timestamp column is only really relevant for the interactions that only had a single picture (interactTime == 0) since the way it keeps rows is by pulling the first item from each group
+intervalDistinct3 <- intTime3 %>% distinct(endTime, startTime, newEvent, interactTime, interaction, deployment_id, markings, .keep_all = T)
+
+# 0 means there was a single photo of the interaction, but that does not make sense for an interaction to last 0 seconds, and the amount of zeroes can potentially cause problems in the code later on
+intervalDistinct3$interactTime[intervalDistinct3$interactTime == 0] <- 1
+
+View(intervalDistinct3)
+```
+
+
+
+
+Different because of time being exceeded:
+```{r}
+timeEx <- deerOrganized %>% mutate(
+                prevTime = lag(timestamp), #lag = take previous
+                prevMark = lag(markings), #take the previous of time and markings 
+                
+                difTime = as.numeric(difftime(timestamp, prevTime, units = "secs")),
+                #if the time is na or the marking has changed or the time is over 3 minutes then it is true its a new interaction 
+                newInt = ifelse(is.na(difTime) | difTime > 180, 1, 0), 
+                
+                newEvent = cumsum(newInt)
+) %>% ungroup() #ungroup since it is getting grouped differently below
+
+intTimetime <- timeEx %>%
+  group_by(deployment_id, newEvent, markings) %>%
+  mutate(
+    startTime = min(timestamp), 
+    endTime   = max(timestamp), 
+    #as.numeric gets rid of the "secs" at the end
+    interactTime = as.numeric(difftime(endTime, startTime, units = "secs"))
+  )
+
+timeExceed <- intTimetime %>% distinct(endTime, startTime, newEvent, interactTime, interaction, deployment_id, markings, .keep_all = T)
+                    
+View(timeExceed)
+
+```
+
+
+new interaction bcz of id changes:
+```{r}
+deerIntervalID <- deerOrganized %>% mutate(
+                prevTime = lag(timestamp), #lag = take previous
+                prevMark = lag(markings), #take the previous of time and markings 
+                
+                difTime = as.numeric(difftime(timestamp, prevTime, units = "secs")),
+                newInt = ifelse(is.na(difTime) | markings != prevMark, 1, 0), 
+                
+                newEvent = cumsum(newInt)
+) %>% ungroup() #ungroup since it is getting grouped differently below
+
+intTimeID <- deerIntervalID %>%
+  group_by(deployment_id, newEvent, markings) %>%
+  mutate(
+    startTime = min(timestamp), 
+    endTime   = max(timestamp), 
+    interactTime = as.numeric(difftime(endTime, startTime, units = "secs"))
+  )
+
+idChange <- intTimeID %>% distinct(endTime, startTime, newEvent, interactTime, interaction, deployment_id, markings, .keep_all = T)
+                    
+View(idChange)
+
+```
+
+
+
+
+Making separate datasets for each type of interaction
+This will show how much the deer interact, the more pictures of them together the more they are interacting. 
+
+```{r}
+
+#making separate datasets for each type of interactions
+CCNcT <- intervalDistinct3 %>% filter(interaction == 1)
+CCNcNt <- intervalDistinct3 %>% filter(interaction == 2)
+CC <- intervalDistinct3 %>% filter(interaction == 3)
+CNcT <- intervalDistinct3 %>% filter(interaction == 4)
+CNcNt <- intervalDistinct3 %>% filter(interaction == 5)
+CCNcNtNcT <- intervalDistinct3 %>% filter(interaction == 6)
+
+```
+
+
+Number of interactions per tagged deer
+```{r}
+library(dplyr)
+#split the ids by comma into separate rows 
+deerTally <- intervalDistinct3 %>% separate_rows(individual_id, sep = ",") %>%
+  group_by(individual_id) %>%#group by id so the summarize can combine it by id
+  mutate(individual_id = trimws(individual_id)) %>% #get rid of any whitespace that slipped into the id section
+  filter(individual_id != "") %>% #it counted all the rows without ids as a blank id and gave it its own row so this gets rid of it
+  summarise(#keep a tally of how many times each id has each interaction
+    int1 = sum(interaction == 1), 
+    int2 = sum(interaction == 2), 
+    int3 = sum(interaction == 3), 
+    int4 = sum(interaction == 4), 
+    int5 = sum(interaction == 5), 
+    int6 = sum(interaction == 6), 
+    totalInts = int1 + int2 + int3 + int4 + int5 + int6,#get the total number of interactions
+    totalTime = sum(interactTime), #total length of time that deer spent
+  )
+View(deerTally)
+
+```
+
+
+**EDA**
+percentages of each type of interaction 
+```{r}
+
+#only 2.8% of interaction images show C + C + NC_T deer interacting
+nrow(CCNcT) / nrow(intervalDistinct3)
+
+#only 10.2% of interaction images show C + C + NC_NT deer interacting
+nrow(CCNcNt) / nrow(intervalDistinct3)
+
+#only 11.4% of interaction images show 2+ collared deer interacting (no NC deer present)
+nrow(CC) / nrow(intervalDistinct3)
+
+#31.6% of interaction images show C + NC_T deer interacting
+nrow(CNcT) / nrow(intervalDistinct3)
+
+#43.8% of interaction images show c + NC_NT deer interacting
+nrow(CNcNt) / nrow(intervalDistinct3)
+
+#0.1% show C+c+ncnt+nct
+nrow(CCNcNtNcT) / nrow(intervalDistinct3)
+```
+
+
+
+bar plot for number of each type of interation
+```{r}
+ggplot(intervalDistinct3, aes(interaction)) + 
+  geom_bar(fill="hotpink") + 
+  geom_text(stat = "count", aes(label = after_stat(count), vjust = -0.5)) + 
+  labs(title = "Number of Interactions Per Type", x = "Interaction Type") 
+
+```
+
+histogram for druation of interaction
+
+```{r}
+hist(intervalDistinct3$interactTime, breaks = 50, main = "Duration of Interactions", xlab = "Duration in Seconds", ylab = "Count", col = "magenta")
+
+```
+
+
+data prep for poisson for gender vs seasons for interaction duration
+```{r}
+#does gender or season effect interactions more?
+
+#update dataset with counts grouped by M/F and season(pulled from the date not the subproject_name)
+      
+#find the chaarcter after the last _ and put it in a list
+intervalDistinct3$gender <- sapply(strsplit(intervalDistinct3$markings, ","), function(x) {
+  paste(sub(".*_", "", x), collapse = ",")
+}) 
+
+
+#unfortunately found an issue of interactions missing the last underscore and therefore having no written gender
+for(x in 1:nrow(intervalDistinct3))
+{
+  curr <- strsplit(intervalDistinct3$gender[x], ",")[[1]] #split the cell
+  fixedLine <- sapply(curr, function(y) #if something other than LAD found in the split fix it
+    {
+    if(y %in% c("L", "A", "D"))
+    {
+      return(y)
+    }
+    if(grepl("OR|Y", y))
+    {
+      return("L")
+    }
+    if(grepl("WH", y))
+    {
+      return("A")
+    }
+  })
+  #if a change had to be made flag it 
+  if(paste(fixedLine, collapse = ",") != intervalDistinct3$gender[x])
+  {
+    intervalDistinct3$Flag[x] <- 1
+  }
+  intervalDistinct3$gender[x] <- paste(fixedLine, collapse = ",") #put the fixed listback
+}
+
+
+
+#split and find all females/males/unknown sex 
+intervalDistinct3$female <- sapply(strsplit(intervalDistinct3$gender, ","), function(x)
+  {
+  sum(x == "L")
+})
+intervalDistinct3$unknown <- sapply(strsplit(intervalDistinct3$gender, ","), function(x)
+  {
+  sum(x == "D")
+})
+intervalDistinct3$male <- sapply(strsplit(intervalDistinct3$gender, ","), function(x)
+  {
+  sum(x == "A")
+})
+
+#extract the month
+intervalDistinct3$season <- format(as.POSIXct(intervalDistinct3$timestamp), "%B")
+#map the month to season
+map <- c("January" = "Winter", "February" = "Winter", "March" = "Spring", "April" = "Spring", "May" = "Spring", "June" = "Summer", "July" = "Summer", "August" = "Summer", "September" = "Fall", "October" = "Fall", "November" = "Fall", "December" = "Winter")
+intervalDistinct3$season <- map[intervalDistinct3$season]
+
+
+View(intervalDistinct3)
+```
+
+ negative binom for gender vs seasons for interaction duration
+ 
+Proportion of female deers has a great effect on the length of interactions between C/NC
+While seasons have no significant effect.
+
+https://stats.oarc.ucla.edu/r/dae/zinb/ <-  explains why zero inflated negative binomial wouldnt work
+```{r}
+library(MASS)
+#dont care about interaction = 3 bcz that is C+C exclusivly
+ColNcOnly <- intervalDistinct3 %>% filter(interaction != 3) %>% mutate(Fproportion = female/number_of_objects)
+View(ColNcOnly)
+
+#regular glm showed sigficantly worse AIC at over 19k
+#poisDF <- glm(interactTime ~ season + Fproportion, family = poisson, data = ColNcOnly)
+#summary(poisDF)
+
+
+#negative binomial improved the model signifcantly meaning we have a lot of over dispuersion 
+
+nbDF <- glm.nb(interactTime ~ season + Fproportion,
+               data = ColNcOnly)
+summary(nbDF)
+plot(nbDF)
+
+library(MASS)
+gammaDF <- glm(interactTime ~ season + Fproportion, family = Gamma(link = log),
+               data = ColNcOnly)
+summary(gammaDF)
+plot(gammaDF)
+
+gammaDF2 <- glm(interactTime ~ Fproportion, family = Gamma(link = log),
+               data = ColNcOnly)
+summary(gammaDF2)
+
+gammaDF3 <- glm(interactTime ~ season , family = Gamma(link = log),
+               data = ColNcOnly)
+summary(gammaDF3)
+
+#negative binomial
+nb2 <- glm.nb(interactTime ~ Fproportion, 
+               data = ColNcOnly)
+summary(nb2)
+
+nb3 <- glm.nb(interactTime ~ season , 
+               data = ColNcOnly)
+summary(nb3)
+
+#test with anova's log likleyhood
+anova(gammaDF2, gammaDF, test = "Chisq")
+anova(gammaDF3, gammaDF, test = "Chisq")
+
+logLik(gammaDF)
+logLik(gammaDF2)
+logLik(gammaDF3)
+
+AIC(nbDF, gammaDF, gammaDF2, gammaDF3)
+
+library(performance)
+check_overdispersion(gammaDF)#this test still shows a lot of ovedispersion despite already using negative binomial
+check_overdispersion(nbDF)#this test still shows a lot of ovedispersion despite already using negative binomial
+```
+
+Taking into account the severe amount of 1 second interactions 
+```{r}
+#does the proportion of female deer influence the chance of an interaction lasting longer than 1 second?
+ColNcOnly$longInteract <- (ColNcOnly$interactTime > 1)
+ColNcOnly$longInteract <- as.numeric(ColNcOnly$longInteract)
+ 
+longBin <- glm(longInteract ~ season + Fproportion, family = binomial, data = ColNcOnly)
+summary(longBin)
+check_overdispersion(longBin)
+
+
+#does the proportion of female deer increase the leangth of interactions which are already over 1 second?
+#only look at interactions over 1 second
+longOnly <- subset(ColNcOnly, interactTime > 1)
+longModel <- glm.nb(interactTime ~ season + Fproportion, data = longOnly)
+summary(longModel)
+plot(longModel)
+check_overdispersion(longModel)
+#    Null deviance: 289.22  on 242  degrees of freedom
+#Residual deviance: 276.58  on 239  degrees of freedom
+#AIC: 1993.7
+
+
+#gamma, slightly better
+gamIntOnlyDF <- subset(ColNcOnly, interactTime > 1)
+gamIntOnly <- glm(interactTime ~ season + Fproportion, family = Gamma(link = log), data = longOnly)
+summary(gamIntOnly)
+plot(gamIntOnly)
+check_overdispersion(gamIntOnly)
+check_overdispersion(longModel)
+
+#    Null deviance: 386.77  on 242  degrees of freedom
+#Residual deviance: 370.04  on 239  degrees of freedom
+#AIC: 1984.5
+```
+
+
+
+
+
+
+https://bhaskarvk.github.io/user2017.geodataviz/notebooks/03-Interactive-Maps.nb.html#using_leaflet 
+https://rstudio.github.io/leaflet/articles/popups.html
+https://r-graph-gallery.com/package/leaflet.html
+```{r}
+library(ggspatial)
+library(ggmap)
+library(leaflet)
+library(htmltools)
+
+#convert to dataframe and rename
+ColCol <- data.frame(lng = c(CC$longitude), lat = c(CC$latitude))
+COlColNcNt <- data.frame(lng = c(CCNcNt$longitude), lat = c(CCNcNt$latitude))
+ColColNcT <- data.frame(lng = c(CCNcT$longitude), lat = c(CCNcT$latitude))
+ColNcT <- data.frame(lng = c(CNcT$longitude), lat = c(CNcT$latitude))
+ColNcNt <- data.frame(lng = c(CNcNt$longitude), lat = c(CNcNt$latitude))
+
+#make a frequency column per location
+COlColNcNt <- COlColNcNt%>% count(lng, lat, name = "freq")
+ColCol <- ColCol %>% count(lng, lat, name = "freq")
+ColNcNt <- ColNcNt%>% count(lng, lat, name = "freq")
+ColNcT <- ColNcT%>% count(lng, lat, name = "freq")
+ColColNcT <- ColColNcT %>% count(lng, lat, name = "freq")
+
+#combine all the ones that are Collared + No collar interactions
+ColNoColFull <- intervalDistinct3 %>% filter(interaction != 3)
+ColNoColFull <- data.frame(lng = c(ColNoColFull$longitude), lat = c(ColNoColFull$latitude))
+ColNoColFreq <- ColNoColFull %>% count(lng, lat, name = "freq")
+
+```
+
+Find areas with high amounts of Collared and Non-collared interaction
+```{r}
+pal <- colorNumeric(palette = c("lightpink", "maroon", "red"), 
+                    domain = ColNoColFreq$freq)
+ColNoCol_map <- leaflet() %>%
+  setView(lat = 40.588176, lng = -74.141917, zoom=13.49) %>%
+  addTiles(group="OSM") %>%
+  addProviderTiles(providers$CartoDB.DarkMatter, group="Dark") %>%
+  addProviderTiles(providers$CartoDB.Positron, group="Light") %>%
+  addLayersControl(baseGroups=c('OSM','Dark','Light')) %>%
+  addCircleMarkers(data = ColNoColFreq, color = ~pal(ColNoColFreq$freq), popup = ~htmlEscape(ColNoColFreq$freq), opacity = 0.5)%>%
+  addLegend("bottomright", pal = pal, values = ColNoColFreq$freq, opacity = 1)
+
+ColNoCol_map
+```
+
+
+Day vs Night 
+```{r}
+colNoColTime <- intervalDistinct3 %>% filter(interaction != 3)
+HourOfday <- colNoColTime %>% mutate(start_time = as.POSIXct(startTime), hour = as.numeric(format(start_time, "%H")), period = ifelse(hour > 6 & hour <18, "Day", "Night"))
+
+Day <- HourOfday %>% filter(period == "Day")
+Night <- HourOfday %>% filter(period == "Night")
+
+
+DayDF <- data.frame(lng = c(Day$longitude), lat = c(Day$latitude))
+DayFreq <- DayDF %>% count(lng, lat, name = "freq")
+
+nightDF <- data.frame(lng = c(Night$longitude), lat = c(Night$latitude))
+nightFreq <- nightDF %>% count(lng, lat, name = "freq")
+
+############################################################################################################
+
+#Day = red
+colors <- colorNumeric(palette = c("lightpink", "maroon", "red3"), 
+                    domain = DayFreq$freq)
+DayFreq_map <- leaflet() %>%
+  setView(lat = 40.588176, lng = -74.141917, zoom=13.49) %>%
+  addTiles(group="OSM") %>%
+  addProviderTiles(providers$CartoDB.DarkMatter, group="Dark") %>%
+  addProviderTiles(providers$CartoDB.Positron, group="Light") %>%
+  addLayersControl(baseGroups=c('OSM','Dark','Light')) %>%
+  addCircleMarkers(data = DayFreq, color = ~colors(DayFreq$freq), popup = ~htmlEscape(DayFreq$freq), opacity = 0.7)%>%
+  addLegend("bottomright", pal = colors, values = DayFreq$freq, opacity = 1)
+
+DayFreq_map
+```
+
+
+Night is blue 
+```{r}
+colors2 <- colorNumeric(palette = c("lightblue", "blue", "navy"), 
+                    domain = nightFreq$freq)
+nightFreq_map <- leaflet() %>%
+  setView(lat = 40.588176, lng = -74.141917, zoom=13.49) %>%
+  addTiles(group="OSM") %>%
+  addProviderTiles(providers$CartoDB.DarkMatter, group="Dark") %>%
+  addProviderTiles(providers$CartoDB.Positron, group="Light") %>%
+  addLayersControl(baseGroups=c('OSM','Dark','Light')) %>%
+  addCircleMarkers(data = nightFreq, color = ~colors2(nightFreq$freq), popup = ~htmlEscape(nightFreq$freq), opacity = 0.85)%>%
+  addLegend("bottomright", pal = colors2, values = nightFreq$freq, opacity = 1)
+
+nightFreq_map
+
+
+```
+
+
+
+
+
+
+
+```{r}
+library(leaflet.extras)
+library(sf)
+library(mapview)
+library(viridis)
+
+library(rcrimeanalysis)
+```
+
+
+
+https://cran.r-project.org/web/packages/rcrimeanalysis/vignettes/rcrimeanalysis.html
+kernel density estimator KDE
+```{r}
+ColNoColKDE <-  ColNoColFull %>% rename(longitude = lng, latitude = lat)
+
+kde_map(ColNoColKDE, pts = FALSE)
+```
+
+
+KDE by season(does not really work because the cameras are also stagnant and have repeat interactions no matter the season)
+```{r}
+ColNoColSeasons <- intervalDistinct3 %>% filter(interaction != 3)
+
+Winter <- ColNoColSeasons %>% filter(season == "Winter")
+Summer <- ColNoColSeasons %>% filter(season == "Summer")
+Spring <- ColNoColSeasons %>% filter(season == "Spring")
+
+
+WinterKDE <-  ColNoColFull %>% rename(longitude = lng, latitude = lat)
+SummerKDE <-  ColNoColFull %>% rename(longitude = lng, latitude = lat)
+SpringKDE <-  ColNoColFull %>% rename(longitude = lng, latitude = lat)
+
+kde_map(WinterKDE, pts = F)
+kde_map(SummerKDE, pts = F)
+kde_map(SpringKDE, pts = F)
+```
+
+
+https://rpubs.com/nomarpicasso/1158007
+Heat map, doesnt give any new information its basically just blurring the existing data points
+
+
+
+Map for Collared + Collared
+```{r}
+pal1 <- colorNumeric(palette = c("turquoise3", "blue", "navy"), 
+                    domain = ColCol$freq)
+
+ColCol_map <- leaflet() %>%
+  setView(lat = 40.588176, lng = -74.141917, zoom=13.25) %>%
+  addTiles(group="OSM") %>%
+  addProviderTiles(providers$CartoDB.DarkMatter, group="Dark") %>%
+  addProviderTiles(providers$CartoDB.Positron, group="Light") %>%
+  addLayersControl(baseGroups=c('OSM','Dark','Light')) %>%
+  addCircleMarkers(data = ColCol, color = ~pal1(ColCol$freq), popup = ~htmlEscape(ColCol$freq)) %>% 
+  addLegend("bottomright", pal = pal1, values = ColCol$freq, opacity = 1)
+ColCol_map
+
+```
+
+
+Map for Collared + Collared + No Collar&No tag
+```{r}
+pal2 <- colorNumeric(palette = c("turquoise3", "blue", "navy"), 
+                    domain = COlColNcNt$freq)
+
+COlColNcNt_map <- leaflet() %>%
+  setView(lat = 40.588176, lng = -74.141917, zoom=13) %>%
+  addTiles(group="OSM") %>%
+  addProviderTiles(providers$CartoDB.DarkMatter, group="Dark") %>%
+  addProviderTiles(providers$CartoDB.Positron, group="Light") %>%
+  addLayersControl(baseGroups=c('OSM','Dark','Light')) %>%
+  addCircleMarkers(data = COlColNcNt, color = ~pal2(COlColNcNt$freq), popup = ~htmlEscape(COlColNcNt$freq)) %>%
+  addLegend("bottomright", pal = pal2, values = COlColNcNt$freq, opacity = 1)
+COlColNcNt_map
+
+```
+
+Map for Collared + Collared + No Collar&Tagged
+```{r}
+pal3 <- colorNumeric(palette = c("turquoise3", "blue", "navy"), 
+                     domain = ColColNcT$freq)
+
+ColColNcT_map <- leaflet() %>%
+  setView(lat = 40.588176, lng = -74.141917, zoom=13.25) %>%
+  addTiles(group="OSM") %>%
+  addProviderTiles(providers$CartoDB.DarkMatter, group="Dark") %>%
+  addProviderTiles(providers$CartoDB.Positron, group="Light") %>%
+  addLayersControl(baseGroups=c('OSM','Dark','Light')) %>%
+  addCircleMarkers(data = ColColNcT, color = ~pal3(ColColNcT$freq), popup = ~htmlEscape(ColColNcT$freq)) %>%
+  addLegend("bottomright", pal = pal3, values = ColColNcT$freq, opacity = 1)
+ColColNcT_map
+
+```
+
+
+Map for Collared + No Collar&Tagged
+```{r}
+pal4 <- colorNumeric(palette = c("turquoise3", "blue", "navy"), 
+                     domain = ColNcT$freq)
+
+ColNcT_map <- leaflet() %>%
+  setView(lat = 40.588176, lng = -74.141917, zoom=13.25) %>%
+  addTiles(group="OSM") %>%
+  addProviderTiles(providers$CartoDB.DarkMatter, group="Dark") %>%
+  addProviderTiles(providers$CartoDB.Positron, group="Light") %>%
+  addLayersControl(baseGroups=c('OSM','Dark','Light')) %>%
+  addCircleMarkers(data = ColNcT, color = ~pal4(ColNcT$freq), popup = ~htmlEscape(ColNcT$freq)) %>%
+  addLegend("bottomright", pal = pal4, values = ColNcT$freq, opacity = 1)
+ColNcT_map
+
+```
+
+
+Map for Collared + No Collar&No Tag
+```{r}
+pal5 <- colorNumeric(palette = c("turquoise3", "blue", "navy"),
+                     domain = ColNcNt$freq)
+
+ColNcNt_map <- leaflet() %>%
+  setView(lat = 40.588176, lng = -74.141917, zoom=13.25) %>%
+  addTiles(group="OSM") %>%
+  addProviderTiles(providers$CartoDB.DarkMatter, group="Dark") %>%
+  addProviderTiles(providers$CartoDB.Positron, group="Light") %>%
+  addLayersControl(baseGroups=c('OSM','Dark','Light')) %>%
+  addCircleMarkers(data = ColNcNt, color = ~pal5(ColNcNt$freq), popup = ~htmlEscape(ColNcNt$freq))  %>%
+  addLegend("bottomright", pal = pal5, values = ColNcNt$freq, opacity = 1) 
+ColNcNt_map
+
+```
+
