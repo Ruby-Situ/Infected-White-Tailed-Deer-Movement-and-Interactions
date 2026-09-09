@@ -3,7 +3,7 @@ An analysis on the movement patterns and interactions of White-Tailed Deer infec
 
 ## Presentation
 
-![Slide 1](deer slides/Collared and Non-Collared White-Tailed Deer Interaction (1).png)
+<img (deer slides/Collared and Non-Collared White-Tailed Deer Interaction (1).png)>
 
 ![Slide 2](deer slides/Collared and Non-Collared White-Tailed Deer Interaction (2).png)
 
