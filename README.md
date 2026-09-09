@@ -1,9 +1,7 @@
-<img width="960" height="540" alt="Collared and Non-Collared White-Tailed Deer Interaction (21)" src="https://github.com/user-attachments/assets/01c2f9f9-3d1f-4d85-ac02-9328490ce310" />
 # Infected-White-Tailed-Deer-Movement-and-Interactions
 An analysis on the movement patterns and interactions of White-Tailed Deer infected with SARS-CoV-2 in Staten Island 
 
-## Presentation
-
+## Presentation 
 
 <img width="960" height="540" alt="Collared and Non-Collared White-Tailed Deer Interaction" src="https://github.com/user-attachments/assets/23eb18a5-1258-4d42-9517-6bce5d12c423" />
 
