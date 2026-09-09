@@ -43,6 +43,11 @@ An analysis on the movement patterns and interactions of White-Tailed Deer infec
 
 <img width="960" height="540" alt="Collared and Non-Collared White-Tailed Deer Interaction (19)" src="https://github.com/user-attachments/assets/3c53d843-7be0-47d2-867b-fbf423f1e204" />
 
+<img width="960" height="540" alt="Collared and Non-Collared White-Tailed Deer Interaction" src="https://github.com/user-attachments/assets/01f026ea-e84a-484d-9dc5-790d250ba8f5" />
+
+<img width="960" height="540" alt="Collared and Non-Collared White-Tailed Deer Interaction (1)" src="https://github.com/user-attachments/assets/427c2b31-4aaa-4440-a76c-cd3f45f2dff7" />
+
+
 <img width="960" height="540" alt="Collared and Non-Collared White-Tailed Deer Interaction (22)" src="https://github.com/user-attachments/assets/236e37fb-fda7-4132-9d69-e12153a566e4" />
 
 <img width="960" height="540" alt="Collared and Non-Collared White-Tailed Deer Interaction (23)" src="https://github.com/user-attachments/assets/eb07e10c-b751-4f4a-bb7a-9dd7a7930f87" />
